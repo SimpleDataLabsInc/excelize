@@ -9,6 +9,9 @@
 // API for generating or reading data from a worksheet with huge amounts of
 // data. This library needs Go version 1.18 or later.
 
+// Package excelize - Forked from v2.9.0 of excelize library - https://github.com/qax-os/excelize
+// Look for <PATCHED LINE> to see the changes made to the original code.
+
 package excelize
 
 import (
@@ -643,6 +646,15 @@ func (c *xlsxC) getValueFrom(f *File, d *xlsxSST, raw bool) (string, error) {
 		}
 		return f.formattedValue(c, raw, CellTypeNumber)
 	}
+}
+
+// <PATCHED LINE>
+// getValueAndStyleFrom return a value and styleID from a column/row cell, this function is
+// intended to be used with for range on rows an argument with the spreadsheet
+// opened file.
+func (c *xlsxC) getValueAndStyleFrom(f *File, d *xlsxSST, raw bool) (string, int, error) {
+	value, err := c.getValueFrom(f, d, raw)
+	return value, c.S, err
 }
 
 // SetCellDefault provides a function to set string type value of a cell as
