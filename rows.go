@@ -9,6 +9,9 @@
 // API for generating or reading data from a worksheet with huge amounts of
 // data. This library needs Go version 1.18 or later.
 
+// Package excelize - Forked from v2.9.0 of excelize library - https://github.com/qax-os/excelize
+// Look for <PATCHED LINE> to see the changes made to the original code.
+
 package excelize
 
 import (
@@ -195,6 +198,60 @@ func (rows *Rows) Columns(opts ...Options) ([]string, error) {
 	return rowIterator.cells, rowIterator.err
 }
 
+// <PATCHED LINE> start
+
+// ColumnsWithCorrespondingStyleIDs return the current row's column values along with their style IDs. This fetches the worksheet
+// data as a stream, returns each cell in a row as is, and will not skip empty
+// rows in the tail of the worksheet.
+func (rows *Rows) ColumnsWithCorrespondingStyleIDs(opts ...Options) ([]string, []int, error) {
+	if rows.curRow > rows.seekRow {
+		return nil, nil, nil
+	}
+	var rowIterator rowXMLIteratorV2
+	var token xml.Token
+	rows.rawCellValue = rows.f.getOptions(opts...).RawCellValue
+	if rows.sst, rowIterator.err = rows.f.sharedStringsReader(); rowIterator.err != nil {
+		return rowIterator.cells, rowIterator.styleIDs, rowIterator.err
+	}
+	for {
+		if rows.token != nil {
+			token = rows.token
+		} else if token, _ = rows.decoder.Token(); token == nil {
+			break
+		}
+		switch xmlElement := token.(type) {
+		case xml.StartElement:
+			rowIterator.inElement = xmlElement.Name.Local
+			if rowIterator.inElement == "row" {
+				rowNum := 0
+				if rowNum, rowIterator.err = attrValToInt("r", xmlElement.Attr); rowNum != 0 {
+					rows.curRow = rowNum
+				} else if rows.token == nil {
+					rows.curRow++
+				}
+				rows.token = token
+				rows.seekRowOpts = extractRowOpts(xmlElement.Attr)
+				if rows.curRow > rows.seekRow {
+					rows.token = nil
+					return rowIterator.cells, rowIterator.styleIDs, rowIterator.err
+				}
+			}
+			if rows.rowXMLHandlerV2(&rowIterator, &xmlElement, rows.rawCellValue); rowIterator.err != nil {
+				rows.token = nil
+				return rowIterator.cells, rowIterator.styleIDs, rowIterator.err
+			}
+			rows.token = nil
+		case xml.EndElement:
+			if xmlElement.Name.Local == "sheetData" {
+				return rowIterator.cells, rowIterator.styleIDs, rowIterator.err
+			}
+		}
+	}
+	return rowIterator.cells, rowIterator.styleIDs, rowIterator.err
+}
+
+// <PATCHED LINE> end
+
 // extractRowOpts extract row element attributes.
 func extractRowOpts(attrs []xml.Attr) RowOpts {
 	rowOpts := RowOpts{Height: defaultRowHeight}
@@ -217,6 +274,17 @@ func appendSpace(l int, s []string) []string {
 	}
 	return s
 }
+
+// <PATCHED LINE> start
+// appendSpaceInt append blank integers to slice by given length and source slice.
+func appendSpaceInt(l int, s []int) []int {
+	for i := 1; i < l; i++ {
+		s = append(s, 0)
+	}
+	return s
+}
+
+// <PATCHED LINE> end
 
 // rowXMLIterator defined runtime use field for the worksheet row SAX parser.
 type rowXMLIterator struct {
@@ -243,6 +311,37 @@ func (rows *Rows) rowXMLHandler(rowIterator *rowXMLIterator, xmlElement *xml.Sta
 		}
 	}
 }
+
+// <PATCHED LINE> start
+// rowXMLIteratorV2 defined runtime use field for the worksheet row SAX parser.
+type rowXMLIteratorV2 struct {
+	err              error
+	inElement        string
+	cellCol, cellRow int
+	cells            []string
+	styleIDs         []int
+}
+
+// rowXMLHandlerV2 parse the row XML element of the worksheet.
+func (rows *Rows) rowXMLHandlerV2(rowIterator *rowXMLIteratorV2, xmlElement *xml.StartElement, raw bool) {
+	if rowIterator.inElement == "c" {
+		rowIterator.cellCol++
+		colCell := xlsxC{}
+		_ = rows.decoder.DecodeElement(&colCell, xmlElement)
+		if colCell.R != "" {
+			if rowIterator.cellCol, _, rowIterator.err = CellNameToCoordinates(colCell.R); rowIterator.err != nil {
+				return
+			}
+		}
+		blank := rowIterator.cellCol - len(rowIterator.cells)
+		if val, styleID, _ := colCell.getValueAndStyleFrom(rows.f, rows.sst, raw); val != "" || colCell.F != nil {
+			rowIterator.cells = append(appendSpace(blank, rowIterator.cells), val)
+			rowIterator.styleIDs = append(appendSpaceInt(blank, rowIterator.styleIDs), styleID)
+		}
+	}
+}
+
+// <PATCHED LINE> end
 
 // Rows returns a rows iterator, used for streaming reading data for a
 // worksheet with a large data. This function is concurrency safe. For
