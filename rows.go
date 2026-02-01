@@ -438,7 +438,10 @@ func (f *File) getFromStringItem(index int) string {
 }
 
 // xmlDecoder creates XML decoder by given path in the zip from memory data
-// or system temporary file.
+// or system temporary file. When reading from a temp file (e.g. large
+// worksheets), the file is wrapped in a prefetchReader so the columns/token
+// flow reads from an in-memory buffer with async disk prefetch, reducing
+// repeated small reads and latency.
 func (f *File) xmlDecoder(name string) (bool, *xml.Decoder, *os.File, error) {
 	var (
 		content  []byte
@@ -449,7 +452,13 @@ func (f *File) xmlDecoder(name string) (bool, *xml.Decoder, *os.File, error) {
 		return false, f.xmlNewDecoder(bytes.NewReader(content)), tempFile, err
 	}
 	tempFile, err = f.readTemp(name)
-	return true, f.xmlNewDecoder(tempFile), tempFile, err
+	if err != nil {
+		return true, nil, tempFile, err
+	}
+	// <PATCHED LINE> Use prefetch buffer for token/columns path to avoid
+	// repeated disk reads; decoder reads from buffer, prefetch refills in background.
+	br := newPrefetchReader(tempFile, defaultPrefetchBufferSize, defaultPrefetchRefillThreshold)
+	return true, f.xmlNewDecoder(br), tempFile, err
 }
 
 // SetRowHeight provides a function to set the height of a single row. If the
