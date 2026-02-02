@@ -27,10 +27,10 @@ import (
 const (
 	// defaultPrefetchBufferSize is the total capacity of the in-memory buffer.
 	// Token/Columns reads are satisfied from this buffer instead of many small file reads.
-	defaultPrefetchBufferSize = 100 * 1024
+	defaultPrefetchBufferSize = 1024 * 1024
 	// defaultPrefetchRefillThreshold is unused when async prefetch is disabled;
 	// kept for API compatibility with newPrefetchReader(bufferSize, refillThreshold).
-	defaultPrefetchRefillThreshold = 20 * 1024
+	defaultPrefetchRefillThreshold = 100 * 1024
 )
 
 // prefetchReader wraps an io.Reader and maintains an in-memory buffer. Read()
