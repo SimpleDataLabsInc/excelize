@@ -175,21 +175,30 @@ func (f *File) checkOpenReaderOptions() error {
 // OpenReader read data stream from io.Reader and return a populated
 // spreadsheet file.
 func OpenReader(r io.Reader, opts ...Options) (*File, error) {
-	b, err := io.ReadAll(r)
+	f := newFile()
+	f.options = f.getOptions(opts...)
+	if err := f.checkOpenReaderOptions(); err != nil {
+		return nil, err
+	}
+	ra, size, cleanup, err := toReaderAt(r)
 	if err != nil {
 		return nil, err
 	}
-	f := newFile()
-	f.options = f.getOptions(opts...)
-	if err = f.checkOpenReaderOptions(); err != nil {
-		return nil, err
-	}
-	if bytes.Contains(b, oleIdentifier) {
+	defer cleanup()
+	// Detect OLE Compound File (encrypted workbook) by its 8-byte magic header.
+	header := make([]byte, len(oleIdentifier))
+	if n, _ := ra.ReadAt(header, 0); n == len(oleIdentifier) && bytes.Equal(header, oleIdentifier) {
+		b := make([]byte, size)
+		if _, err = ra.ReadAt(b, 0); err != nil {
+			return nil, err
+		}
 		if b, err = Decrypt(b, f.options); err != nil {
 			return nil, ErrWorkbookFileFormat
 		}
+		br := bytes.NewReader(b)
+		ra, size = br, int64(len(b))
 	}
-	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	zr, err := zip.NewReader(ra, size)
 	if err != nil {
 		if len(f.options.Password) > 0 {
 			return nil, ErrWorkbookPassword
@@ -215,6 +224,45 @@ func OpenReader(r io.Reader, opts ...Options) (*File, error) {
 	}
 	f.Theme, err = f.themeReader()
 	return f, err
+}
+
+// toReaderAt converts an io.Reader to an io.ReaderAt suitable for zip.NewReader.
+// If r already implements both io.ReaderAt and io.Seeker (e.g. *os.File or
+// *bytes.Reader), it is used directly without any extra buffering.
+// Otherwise the stream is written to a temporary file so that the entire
+// content never has to live in memory at once.  The caller must invoke the
+// returned cleanup function when the io.ReaderAt is no longer needed.
+func toReaderAt(r io.Reader) (ra io.ReaderAt, size int64, cleanup func(), err error) {
+	nop := func() {}
+	type readerAtSeeker interface {
+		io.ReaderAt
+		io.Seeker
+	}
+	if ras, ok := r.(readerAtSeeker); ok {
+		size, err = ras.Seek(0, io.SeekEnd)
+		if err != nil {
+			return nil, 0, nop, err
+		}
+		return ras, size, nop, nil
+	}
+	tmp, err := os.CreateTemp("", "excelize-*.xlsx")
+	if err != nil {
+		return nil, 0, nop, err
+	}
+	cleanup = func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}
+	if _, err = io.Copy(tmp, r); err != nil {
+		cleanup()
+		return nil, 0, nop, err
+	}
+	info, err := tmp.Stat()
+	if err != nil {
+		cleanup()
+		return nil, 0, nop, err
+	}
+	return tmp, info.Size(), cleanup, nil
 }
 
 // getOptions provides a function to parse the optional settings for open
