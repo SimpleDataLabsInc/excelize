@@ -10,6 +10,10 @@
 // data. This library needs Go version 1.18 or later.
 //
 // See https://xuri.me/excelize for more information about this package.
+
+// Package excelize - Forked from v2.9.0 of excelize library - https://github.com/qax-os/excelize
+// Look for <PATCHED LINE> to see the changes made to the original code.
+
 package excelize
 
 import (
@@ -172,8 +176,28 @@ func (f *File) checkOpenReaderOptions() error {
 	return f.checkDateTimePattern()
 }
 
+// <PATCHED LINE> start
+
 // OpenReader read data stream from io.Reader and return a populated
 // spreadsheet file.
+//
+// Memory behavior (change from original implementation):
+//
+//   - Before: The entire stream was read into memory with io.ReadAll(r) so that
+//     zip.NewReader could be given a bytes.Reader. For large files this caused
+//     high memory use and risk of OOM.
+//
+//   - Now: We avoid loading the whole file into memory for unencrypted workbooks.
+//     toReaderAt(r) either uses the reader directly when it supports random
+//     access (e.g. *os.File, *bytes.Reader), or streams the content to a
+//     temporary file with io.Copy. zip.NewReader then reads from that
+//     ReaderAt (file or in-memory). Only a small buffer is used during the
+//     copy, so large unencrypted files no longer need to fit in RAM.
+//
+//   - Encrypted (OLE) workbooks: Decryption still requires the full file in
+//     memory; we detect OLE by the 8-byte magic header at offset 0, then
+//     read and decrypt the full content only when needed. This is unavoidable
+//     with the current Decrypt API and CFB format.
 func OpenReader(r io.Reader, opts ...Options) (*File, error) {
 	f := newFile()
 	f.options = f.getOptions(opts...)
@@ -185,7 +209,9 @@ func OpenReader(r io.Reader, opts ...Options) (*File, error) {
 		return nil, err
 	}
 	defer cleanup()
-	// Detect OLE Compound File (encrypted workbook) by its 8-byte magic header.
+	// OLE (encrypted) workbooks use the Compound File Binary format; the
+	// 8-byte magic is always at offset 0. We only read that header here
+	// instead of scanning the whole file (bytes.Contains(b, oleIdentifier)).
 	header := make([]byte, len(oleIdentifier))
 	if n, _ := ra.ReadAt(header, 0); n == len(oleIdentifier) && bytes.Equal(header, oleIdentifier) {
 		b := make([]byte, size)
@@ -226,12 +252,23 @@ func OpenReader(r io.Reader, opts ...Options) (*File, error) {
 	return f, err
 }
 
+// <PATCHED LINE> end
+
+// <PATCHED LINE> start
+
 // toReaderAt converts an io.Reader to an io.ReaderAt suitable for zip.NewReader.
-// If r already implements both io.ReaderAt and io.Seeker (e.g. *os.File or
-// *bytes.Reader), it is used directly without any extra buffering.
-// Otherwise the stream is written to a temporary file so that the entire
-// content never has to live in memory at once.  The caller must invoke the
-// returned cleanup function when the io.ReaderAt is no longer needed.
+//
+// Why this is needed: zip.NewReader requires random access (io.ReaderAt) and
+// a known size. The previous approach used io.ReadAll(r) to load the entire
+// stream into a []byte, which caused OOM for large files.
+//
+// Behavior:
+//   - If r already implements both io.ReaderAt and io.Seeker (e.g. *os.File or
+//     *bytes.Reader), it is used as-is; size is obtained via Seek(0, SeekEnd).
+//     No extra buffering or temp file.
+//   - Otherwise the stream is copied to a temporary file with io.Copy (fixed
+//     buffer size). The temp file provides io.ReaderAt; the caller must call
+//     the returned cleanup function when done so the file is closed and removed.
 func toReaderAt(r io.Reader) (ra io.ReaderAt, size int64, cleanup func(), err error) {
 	nop := func() {}
 	type readerAtSeeker interface {
@@ -264,6 +301,8 @@ func toReaderAt(r io.Reader) (ra io.ReaderAt, size int64, cleanup func(), err er
 	}
 	return tmp, info.Size(), cleanup, nil
 }
+
+// <PATCHED LINE> end
 
 // getOptions provides a function to parse the optional settings for open
 // and reading spreadsheet.
