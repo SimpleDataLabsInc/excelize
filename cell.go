@@ -648,6 +648,15 @@ func (c *xlsxC) getValueFrom(f *File, d *xlsxSST, raw bool) (string, error) {
 	}
 }
 
+// <PATCHED LINE>
+// getValueAndStyleFrom return a value and styleID from a column/row cell, this function is
+// intended to be used with for range on rows an argument with the spreadsheet
+// opened file.
+func (c *xlsxC) getValueAndStyleFrom(f *File, d *xlsxSST, raw bool) (string, int, error) {
+	value, err := c.getValueFrom(f, d, raw)
+	return value, c.S, err
+}
+
 // SetCellDefault provides a function to set string type value of a cell as
 // default format without escaping the cell.
 func (f *File) SetCellDefault(sheet, cell, value string) error {

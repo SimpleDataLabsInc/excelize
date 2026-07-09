@@ -185,12 +185,63 @@ func (f *File) checkOpenReaderOptions() error {
 
 // OpenReader read data stream from io.Reader and return a populated
 // spreadsheet file.
+//
+// <PATCHED LINE>
+// Memory behavior (change from original implementation): the original read the
+// entire stream into memory with io.ReadAll(r) before handing a bytes.Reader to
+// openReaderAt, which caused high memory use and OOM risk for large files. Now
+// toReaderAt(r) either uses the reader directly when it already supports random
+// access (e.g. *os.File, *bytes.Reader), or streams it to a temporary file with
+// io.Copy. openReaderAt reads all needed content before returning, so the temp
+// file (when used) is safe to remove via the deferred cleanup. Encrypted (OLE)
+// workbooks are still fully buffered inside openReaderAt during decryption,
+// which is unavoidable with the current Decrypt API.
 func OpenReader(r io.Reader, opts ...Options) (*File, error) {
-	b, err := io.ReadAll(r)
+	ra, size, cleanup, err := toReaderAt(r)
 	if err != nil {
 		return nil, err
 	}
-	return openReaderAt(bytes.NewReader(b), int64(len(b)), opts...)
+	defer cleanup()
+	return openReaderAt(ra, size, opts...)
+}
+
+// <PATCHED LINE>
+// toReaderAt converts an io.Reader to an io.ReaderAt suitable for openReaderAt,
+// avoiding io.ReadAll for large streams. If r already implements io.ReaderAt and
+// io.Seeker (e.g. *os.File or *bytes.Reader) it is used as-is and its size is
+// obtained via Seek; otherwise the stream is copied to a temporary file that the
+// returned cleanup function closes and removes. cleanup is always non-nil.
+func toReaderAt(r io.Reader) (ra io.ReaderAt, size int64, cleanup func(), err error) {
+	nop := func() {}
+	type readerAtSeeker interface {
+		io.ReaderAt
+		io.Seeker
+	}
+	if ras, ok := r.(readerAtSeeker); ok {
+		size, err = ras.Seek(0, io.SeekEnd)
+		if err != nil {
+			return nil, 0, nop, err
+		}
+		return ras, size, nop, nil
+	}
+	tmp, err := os.CreateTemp("", "excelize-*.xlsx")
+	if err != nil {
+		return nil, 0, nop, err
+	}
+	cleanup = func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}
+	if _, err = io.Copy(tmp, r); err != nil {
+		cleanup()
+		return nil, 0, nop, err
+	}
+	info, err := tmp.Stat()
+	if err != nil {
+		cleanup()
+		return nil, 0, nop, err
+	}
+	return tmp, info.Size(), cleanup, nil
 }
 
 // openReaderAt read data stream from io.ReaderAt and return a populated
