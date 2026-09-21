@@ -122,6 +122,13 @@ type Options struct {
 	LongDatePattern   string
 	LongTimePattern   string
 	CultureInfo       CultureName
+	// StreamChunkSize (SimpleDataLabsInc patch) is the number of bytes a
+	// StreamWriter accumulates in memory before spilling its worksheet XML to
+	// a temporary file in TmpDir. Each StreamWriter retains up to this much
+	// heap until the workbook is written, so workbooks with many streamed
+	// sheets can lower it to bound memory. Zero keeps the library default
+	// (StreamChunkSize constant, 16 MiB).
+	StreamChunkSize int
 }
 
 // OpenFile take the name of a spreadsheet file and returns a populated

@@ -532,3 +532,49 @@ func TestStreamWriterGetRowElement(t *testing.T) {
 		assert.False(t, ok)
 	}
 }
+
+// TestStreamWriterChunkSizeOption covers the SimpleDataLabsInc patch that lets
+// Options.StreamChunkSize lower the spill threshold per workbook. The default
+// (zero) must keep the library behaviour: small sheets stay in memory.
+func TestStreamWriterChunkSizeOption(t *testing.T) {
+	writeRows := func(sw *StreamWriter, rows int) {
+		for r := 1; r <= rows; r++ {
+			cell, err := CoordinatesToCellName(1, r)
+			assert.NoError(t, err)
+			assert.NoError(t, sw.SetRow(cell, []interface{}{"LOAN-000123-ACTIVE", 1234.56, "2026-01-14", r}))
+		}
+	}
+
+	// Default: ~20 KB of XML stays well below 16 MiB, so no temp file is used.
+	f := NewFile()
+	sw, err := f.NewStreamWriter("Sheet1")
+	assert.NoError(t, err)
+	writeRows(sw, 200)
+	assert.Nil(t, sw.rawData.tmp, "default chunk size should keep a small sheet in memory")
+	assert.Equal(t, StreamChunkSize, sw.rawData.limit())
+	assert.NoError(t, sw.Flush())
+	assert.NoError(t, f.Close())
+
+	// Lowered: the same rows spill to a temp file and the buffer stays bounded.
+	const chunk = 4 << 10
+	f = NewFile(Options{StreamChunkSize: chunk})
+	sw, err = f.NewStreamWriter("Sheet1")
+	assert.NoError(t, err)
+	writeRows(sw, 200)
+	assert.NotNil(t, sw.rawData.tmp, "lowered chunk size should spill to a temp file")
+	assert.Less(t, sw.rawData.buf.Len(), chunk)
+	assert.Equal(t, chunk, sw.rawData.limit())
+	assert.NoError(t, sw.Flush())
+
+	// The spilled workbook must round-trip with the same cell values.
+	path := filepath.Join("test", "TestStreamWriterChunkSizeOption.xlsx")
+	assert.NoError(t, f.SaveAs(path))
+	assert.NoError(t, f.Close())
+	f, err = OpenFile(path)
+	assert.NoError(t, err)
+	rows, err := f.GetRows("Sheet1")
+	assert.NoError(t, err)
+	assert.Len(t, rows, 200)
+	assert.Equal(t, []string{"LOAN-000123-ACTIVE", "1234.56", "2026-01-14", "200"}, rows[199])
+	assert.NoError(t, f.Close())
+}
